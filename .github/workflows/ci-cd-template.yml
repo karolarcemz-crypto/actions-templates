@@ -1,0 +1,71 @@
+name: CI/CD Template
+
+on:
+  workflow_call:
+    inputs:
+      acr-name:        { required: true,  type: string }
+      image-name:      { required: true,  type: string }
+      webapp-name:     { required: true,  type: string }
+      resource-group:  { required: true,  type: string }
+      node-version:    { required: false, type: string, default: '20' }
+    secrets:
+      AZURE_CLIENT_ID:        { required: true }
+      AZURE_TENANT_ID:        { required: true }
+      AZURE_SUBSCRIPTION_ID:  { required: true }
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build --if-present
+      - run: npm test --if-present
+
+  build-and-publish-image:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image: ${{ steps.docker.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Login a Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Build & Push (composite action)
+        id: docker
+        uses: karolarcemz-crypto/actions-templates/actions/docker-build-push@main
+        with:
+          acr-name: ${{ inputs.acr-name }}
+          image-name: ${{ inputs.image-name }}
+          image-tag: ${{ github.sha }}
+
+  deploy:
+    needs: build-and-publish-image
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Login a Azure (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy a Web App for Containers
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ inputs.webapp-name }}
+          images: ${{ needs.build-and-publish-image.outputs.image }}
